@@ -35,6 +35,7 @@ import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.ui.PlayerView
 import org.json.JSONArray
 import org.json.JSONTokener
@@ -281,7 +282,17 @@ class PlayerActivity : Activity() {
 
         // ---------- Player ----------
         val load = DefaultLoadControl.Builder().setBufferDurationsMs(3000, 10000, 1000, 2000).build()
-        player = ExoPlayer.Builder(this, DefaultRenderersFactory(this).setEnableDecoderFallback(true))
+        // Loại bỏ bộ giải mã Dolby Vision để TV không nhận tín hiệu DV từ app
+        val noDolbySelector = MediaCodecSelector { mime, secure, tunnel ->
+            MediaCodecSelector.DEFAULT.getDecoderInfos(mime, secure, tunnel).filter { info ->
+                val mt = info.mimeType ?: ""
+                val nm = info.name.lowercase()
+                !mt.contains("dolby", true) && !nm.contains("dolby") &&
+                    !nm.contains("dvhe") && !nm.contains("dvh1") && !nm.contains("dovi")
+            }
+        }
+        player = ExoPlayer.Builder(this,
+            DefaultRenderersFactory(this).setEnableDecoderFallback(true).setMediaCodecSelector(noDolbySelector))
             .setLoadControl(load)
             .build()
         // Ưu tiên H.264 (thường là SDR) nếu luồng có nhiều bản mã hóa
