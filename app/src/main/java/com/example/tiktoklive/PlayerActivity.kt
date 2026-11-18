@@ -74,41 +74,47 @@ class PlayerActivity : Activity() {
         })();
         """
 
-        // Biến trang TikTok thành lớp phủ bình luận: nền trong suốt, chữ trắng viền đen, ẩn thanh bên/thanh trên
+        // Biến trang TikTok thành lớp phủ bình luận: nền trong suốt, chữ trắng viền đen mảnh
         const val TWEAK_JS = """
         (function(){
           var H=window.innerHeight;
+          var sh='-1px 0 #000,1px 0 #000,0 -1px #000,0 1px #000,-1px -1px #000,1px -1px #000,-1px 1px #000,1px 1px #000';
           var st=document.getElementById('__tv_css');
           if(!st){ st=document.createElement('style'); st.id='__tv_css'; document.head.appendChild(st); }
           st.textContent=
-            'html,body{overflow:hidden !important;background:transparent !important;background-color:transparent !important}'+
-            '*{color:#fff !important;-webkit-text-fill-color:#fff !important;text-shadow:-1.5px -1.5px 0 #000,1.5px -1.5px 0 #000,-1.5px 1.5px 0 #000,1.5px 1.5px 0 #000,0 0 4px rgba(0,0,0,.9) !important}'+
+            'html,body{overflow:hidden !important;background:transparent !important}'+
+            '*{color:#fff !important;text-shadow:'+sh+' !important}'+
             '*::-webkit-scrollbar{display:none !important}'+
             'video,canvas{visibility:hidden !important}'+
-            '[class*="SideNav"],[class*="DivSideNav"],[data-e2e*="side-nav"],[data-e2e="live-side-nav"],'+
-            '[class*="DivHeaderContainer"],[class*="HeaderContainer"],[id="app-header"],[data-e2e="tiktok-header"]{display:none !important}';
+            'input,textarea,[contenteditable="true"],[data-e2e*="chat-input"],[data-e2e*="comment-input"],[class*="InputContainer"],[class*="ChatFooter"]{display:none !important}'+
+            '[class*="TopFan"],[class*="TopUser"],[class*="RankList"],[class*="Leaderboard"],[class*="TopViewer"],[data-e2e*="top-user"],[data-e2e*="rank"]{display:none !important}'+
+            '[class*="SideNav"],[class*="DivSideNav"],[data-e2e*="side-nav"],[class*="DivHeaderContainer"],[class*="HeaderContainer"],[id="app-header"]{display:none !important}';
 
           document.querySelectorAll('video').forEach(function(v){ try{ v.pause(); v.muted=true; v.removeAttribute('src'); v.load(); }catch(e){} });
 
-          // Các khung lớn -> nền trong suốt; ảnh lớn (ảnh bìa) -> ẩn
+          // Xóa nền: nền đậm -> trong suốt; khối sáng mỏng (thanh trắng) -> ẩn; ảnh lớn -> ẩn
           var all=document.body.querySelectorAll('*');
           for(var j=0;j<all.length;j++){
             var e=all[j];
-            if(!e.dataset||e.dataset.tvT) continue;
+            if(!e.dataset || e.dataset.tvT) continue;
             var tg=e.tagName;
-            if(tg==='SCRIPT'||tg==='STYLE'||tg==='path'||tg==='svg'||tg==='use'||tg==='g') continue;
+            if(tg==='SCRIPT'||tg==='STYLE'||tg==='svg'||tg==='path'||tg==='use'||tg==='g') continue;
             var q=e.getBoundingClientRect();
-            if(q.width===0&&q.height===0) continue;
+            if(!q.width||!q.height) continue;
             e.dataset.tvT='1';
             if(tg==='IMG'){ if(q.width>=200&&q.height>=120) e.style.setProperty('visibility','hidden','important'); continue; }
-            if(q.width>=160&&q.height>=30){
-              e.style.setProperty('background-color','transparent','important');
-              e.style.setProperty('background-image','none','important');
-              e.style.setProperty('backdrop-filter','none','important');
+            var m=getComputedStyle(e).backgroundColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?/);
+            if(m){
+              var a=(m[4]===undefined)?1:parseFloat(m[4]);
+              if(a>0.05){
+                var lum=0.299*m[1]+0.587*m[2]+0.114*m[3];
+                if(lum>140 && q.height<90 && q.width>=120){ e.style.setProperty('display','none','important'); continue; }
+                e.style.setProperty('background','transparent','important');
+              }
             }
           }
 
-          // Tự dò và ẩn thanh bên trái (không phụ thuộc tên class)
+          // Tự dò và ẩn thanh bên trái
           if(!window.__tvSideDone){
             var nodes=document.body.querySelectorAll('div,nav,aside,section'), hidden=[];
             for(var i=0;i<nodes.length;i++){
@@ -231,13 +237,8 @@ class PlayerActivity : Activity() {
         screenH = resources.displayMetrics.heightPixels
 
         // ---------- Player ----------
-        val http = DefaultHttpDataSource.Factory()
-            .setUserAgent(UA)
-            .setAllowCrossProtocolRedirects(true)
-            .setDefaultRequestProperties(mapOf("Referer" to "https://www.tiktok.com/"))
         val load = DefaultLoadControl.Builder().setBufferDurationsMs(3000, 10000, 1000, 2000).build()
         player = ExoPlayer.Builder(this, DefaultRenderersFactory(this).setEnableDecoderFallback(true))
-            .setMediaSourceFactory(DefaultMediaSourceFactory(http))
             .setLoadControl(load)
             .build()
         player.addListener(object : Player.Listener {
@@ -299,12 +300,13 @@ class PlayerActivity : Activity() {
         val chatW = (screenW * 0.30f).toInt()
         val chatH = (screenH * 0.58f).toInt()
         val cut = (screenH * 0.13f).toInt()   // phần dưới (ô nhập bình luận) bị cắt bỏ
+        val shiftRight = (resources.displayMetrics.density * 40).toInt()  // dời bình luận sang phải
         chatBox = FrameLayout(this).apply {
             clipChildren = true
             visibility = if (showComments) View.VISIBLE else View.GONE
         }
         chatBox.addView(web, FrameLayout.LayoutParams(screenW, chatH + cut).apply {
-            leftMargin = -(screenW - chatW)
+            leftMargin = -(screenW - chatW) + shiftRight
         })
 
         val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
@@ -374,6 +376,21 @@ class PlayerActivity : Activity() {
         handler.postDelayed(poll, 3000)
         handler.postDelayed(tick, 2000)
     }
+
+    // ================= Mạng: gửi kèm cookie đăng nhập TikTok =================
+    private fun buildHttp(): DefaultHttpDataSource.Factory {
+        val ck = try { CookieManager.getInstance().getCookie("https://www.tiktok.com") ?: "" } catch (e: Exception) { "" }
+        val props = mutableMapOf("Referer" to "https://www.tiktok.com/")
+        if (ck.isNotEmpty()) props["Cookie"] = ck
+        return DefaultHttpDataSource.Factory()
+            .setUserAgent(UA)
+            .setAllowCrossProtocolRedirects(true)
+            .setDefaultRequestProperties(props)
+    }
+
+    private fun isLoggedIn(): Boolean = try {
+        (CookieManager.getInstance().getCookie("https://www.tiktok.com") ?: "").contains("sessionid=")
+    } catch (e: Exception) { false }
 
     // ================= UI helpers =================
     private fun mkBtn(onClick: () -> Unit): Button = Ui.mkButton(this, 15f).apply {
@@ -484,7 +501,8 @@ class PlayerActivity : Activity() {
             streams = list
             ranks = list.map { it.rank }.distinct().sorted()
             streamFound = true
-            playRank(ranks.lastOrNull { it <= 3 } ?: ranks.first())
+            // Mặc định: mức cao nhất đến 1080p (bỏ mức "gốc" để đỡ nặng cho TV)
+            playRank(ranks.filter { it in 1..4 }.lastOrNull() ?: ranks.first())
             if (!showComments) web.loadUrl("about:blank")
         } catch (e: Exception) {
             // thử lại ở lần poll sau
@@ -503,7 +521,8 @@ class PlayerActivity : Activity() {
             showMsg("Không phát được ở mức này. Thử đổi độ phân giải hoặc Tải lại", 0)
             return
         }
-        player.setMediaItem(MediaItem.fromUri(c[attempt].url))
+        val source = DefaultMediaSourceFactory(buildHttp()).createMediaSource(MediaItem.fromUri(c[attempt].url))
+        player.setMediaSource(source)
         player.prepare()
         player.playWhenReady = true
         updateButtons()
@@ -531,10 +550,6 @@ class PlayerActivity : Activity() {
         playRank(ranks[i])
         showMsg("Độ phân giải: " + rankLabel(curRank), 2500)
     }
-
-    private fun isLoggedIn(): Boolean = try {
-        (CookieManager.getInstance().getCookie("https://www.tiktok.com") ?: "").contains("sessionid=")
-    } catch (e: Exception) { false }
 
     private fun reload() {
         streamFound = false
