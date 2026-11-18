@@ -2,10 +2,8 @@ package com.example.tiktoklive
 
 import android.annotation.SuppressLint
 import android.app.Activity
-import android.content.pm.ActivityInfo
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
-import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -24,7 +22,11 @@ import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.media3.common.C
+import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.Tracks
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.VideoSize
@@ -267,8 +269,6 @@ class PlayerActivity : Activity() {
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        // Tắt HDR / màu rộng: ép cửa sổ về chế độ màu SDR mặc định
-        if (Build.VERSION.SDK_INT >= 26) window.colorMode = ActivityInfo.COLOR_MODE_DEFAULT
         goImmersive()
 
         val prefs = getSharedPreferences("cfg", MODE_PRIVATE)
@@ -284,6 +284,10 @@ class PlayerActivity : Activity() {
         player = ExoPlayer.Builder(this, DefaultRenderersFactory(this).setEnableDecoderFallback(true))
             .setLoadControl(load)
             .build()
+        // Ưu tiên H.264 (thường là SDR) nếu luồng có nhiều bản mã hóa
+        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+            .setPreferredVideoMimeType(MimeTypes.VIDEO_H264)
+            .build()
         player.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
                 when (state) {
@@ -298,6 +302,14 @@ class PlayerActivity : Activity() {
                     measuredP[curRank] = minOf(v.width, v.height)
                     updateButtons()
                     startFpsProbe()
+                }
+            }
+            override fun onTracksChanged(tracks: Tracks) {
+                for (g in tracks.groups) {
+                    if (g.type != C.TRACK_TYPE_VIDEO) continue
+                    for (i in 0 until g.length) {
+                        if (g.isTrackSelected(i) && isHdrFormat(g.getTrackFormat(i))) { skipHdr(); return }
+                    }
                 }
             }
             override fun onPlayerError(error: PlaybackException) {
@@ -442,7 +454,7 @@ class PlayerActivity : Activity() {
 
     private fun updateButtons() {
         btnCmt.text = "Bình luận: " + if (showComments) "BẬT" else "TẮT"
-        btnQ.text = "Độ phân giải: " + if (curRank >= 0) rankLabel(curRank) + rankDetail(curRank) else "-"
+        btnQ.text = "Độ phân giải: " + if (curRank >= 0) rankLabel(curRank) else "-"
         btnPause.text = if (player.playWhenReady) "Tạm dừng" else "Phát"
         btnT.text = "Cỡ chữ bình luận: " + TEXT_NAMES[textIdx]
     }
@@ -513,12 +525,6 @@ class PlayerActivity : Activity() {
         1 -> "SD"; 2 -> "HD"; 3 -> "FHD"; 4 -> "UHD"; else -> "Tự động"
     }
 
-    /** Độ phân giải thực đo được sau khi phát (vd " (1080p60)"), để đối chiếu với tên mức. */
-    private fun rankDetail(r: Int): String {
-        val p = measuredP[r] ?: return ""
-        return " (" + p + "p" + (if (measuredFps60[r] == true) "60" else "") + ")"
-    }
-
     private fun startFpsProbe() {
         val c = player.videoDecoderCounters ?: return
         c.ensureUpdated()
@@ -561,10 +567,16 @@ class PlayerActivity : Activity() {
         tryPlay()
     }
 
+    private val hdrBlocked = HashSet<String>()   // link bị bỏ vì là HDR / Dolby Vision
+
+    private fun candidates() = streams.filter { it.rank == curRank }
+        .sortedWith(compareByDescending<StreamInfo> { it.raw }.thenByDescending { it.flv })
+
     private fun tryPlay() {
-        val c = streams.filter { it.rank == curRank }
-            .sortedWith(compareByDescending<StreamInfo> { it.raw }.thenByDescending { it.flv })
+        val c = candidates()
+        while (attempt < c.size && c[attempt].url in hdrBlocked) attempt++
         if (attempt >= c.size) {
+            if (c.isNotEmpty() && c.all { it.url in hdrBlocked }) { skipHdrTier(); return }
             showMsg("Không phát được ở mức này. Thử đổi độ phân giải hoặc Tải lại", 0)
             return
         }
@@ -575,15 +587,39 @@ class PlayerActivity : Activity() {
         updateButtons()
     }
 
+    private fun isHdrFormat(f: Format): Boolean {
+        val mime = f.sampleMimeType ?: ""
+        val codecs = f.codecs ?: ""
+        val t = f.colorInfo?.colorTransfer
+        return mime == MimeTypes.VIDEO_DOLBY_VISION ||
+            codecs.startsWith("dvh") || codecs.startsWith("dva") || codecs.startsWith("dav1") ||
+            t == C.COLOR_TRANSFER_ST2084 || t == C.COLOR_TRANSFER_HLG
+    }
+
+    /** Luồng đang phát là HDR / Dolby Vision -> bỏ link này, thử link khác. */
+    private fun skipHdr() {
+        val c = candidates()
+        if (attempt < c.size) hdrBlocked.add(c[attempt].url)
+        attempt++
+        tryPlay()
+    }
+
+    /** Mọi link của mức này đều là HDR -> bỏ mức này, chuyển xuống mức thấp hơn. */
+    private fun skipHdrTier() {
+        val old = curRank
+        ranks = ranks.filter { it != old }
+        val lower = ranks.filter { it in 1 until old }.maxOrNull() ?: ranks.firstOrNull()
+        if (lower == null) {
+            showMsg("Luồng này chỉ có bản HDR, không có bản SDR để phát", 0)
+            return
+        }
+        showMsg("Mức " + rankLabel(old) + " là HDR nên đã bỏ qua, chuyển sang " + rankLabel(lower), 3500)
+        playRank(lower)
+    }
+
     private fun changeQuality(dir: Int, wrap: Boolean) {
         if (ranks.size < 2) {
-            showMsg(
-                when {
-                    ranks.isEmpty() -> "Chưa có luồng video"
-                    isLoggedIn() -> "Kênh này chỉ có 1 mức độ phân giải"
-                    else -> "Chỉ có 1 mức. Đăng nhập TikTok để có thêm độ phân giải cao"
-                }, 3000
-            )
+            showMsg(if (ranks.isEmpty()) "Chưa có luồng video" else "Kênh này chỉ có 1 mức độ phân giải", 3000)
             return
         }
         var i = ranks.indexOf(curRank) + dir
@@ -599,6 +635,7 @@ class PlayerActivity : Activity() {
     }
 
     private fun reload() {
+        hdrBlocked.clear()
         streamFound = false
         pollCount = 0
         player.stop()

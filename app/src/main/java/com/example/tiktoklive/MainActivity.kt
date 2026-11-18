@@ -19,6 +19,10 @@ import android.widget.TextView
 import android.widget.Toast
 
 class MainActivity : Activity() {
+    companion object {
+        /** Tạm tắt mục đăng nhập bằng mã QR. Đổi thành true để bật lại. */
+        const val SHOW_LOGIN = false
+    }
     private lateinit var prefs: SharedPreferences
     private lateinit var input: EditText
     private lateinit var sw: Switch
@@ -69,6 +73,7 @@ class MainActivity : Activity() {
             setOnClickListener { start(input.text.toString()) }
         })
 
+        if (SHOW_LOGIN) {
         loginStatus = TextView(this).apply { textSize = 16f }
         add(loginStatus, 20)
 
@@ -90,6 +95,7 @@ class MainActivity : Activity() {
             }
         }
         add(btnLogout, 8)
+        }
 
         add(TextView(this).apply {
             text = "Lịch sử tìm kiếm"
@@ -112,7 +118,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        refreshLogin()
+        if (SHOW_LOGIN) refreshLogin()
         refreshHistory()
     }
 
