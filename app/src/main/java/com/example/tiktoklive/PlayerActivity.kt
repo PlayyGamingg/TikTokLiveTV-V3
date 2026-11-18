@@ -2,8 +2,10 @@ package com.example.tiktoklive
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.pm.ActivityInfo
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -36,7 +38,8 @@ import org.json.JSONArray
 import org.json.JSONTokener
 import java.io.ByteArrayInputStream
 
-data class StreamInfo(val url: String, val rank: Int, val flv: Boolean)
+// rank = mức hiển thị (1 SD, 2 HD, 3 FHD, 4 UHD); raw = mức gốc theo tên link (ld, sd, hd, uhd, or)
+data class StreamInfo(val url: String, val rank: Int, val raw: Int, val flv: Boolean)
 
 /**
  * Video: ExoPlayer toàn màn hình.
@@ -83,33 +86,71 @@ class PlayerActivity : Activity() {
           if(!st){ st=document.createElement('style'); st.id='__tv_css'; document.head.appendChild(st); }
           st.textContent=
             'html,body{overflow:hidden !important;background:transparent !important}'+
-            '*{color:#fff !important;text-shadow:'+sh+' !important}'+
+            '*{color:#fff !important;text-shadow:'+sh+' !important;box-shadow:none !important;-webkit-mask-image:none !important;mask-image:none !important;backdrop-filter:none !important}'+
+            '*::before,*::after{background:none !important;box-shadow:none !important;-webkit-mask-image:none !important;mask-image:none !important}'+
             '*::-webkit-scrollbar{display:none !important}'+
             'video,canvas{visibility:hidden !important}'+
             'input,textarea,[contenteditable="true"],[data-e2e*="chat-input"],[data-e2e*="comment-input"],[class*="InputContainer"],[class*="ChatFooter"]{display:none !important}'+
-            '[class*="TopFan"],[class*="TopUser"],[class*="RankList"],[class*="Leaderboard"],[class*="TopViewer"],[data-e2e*="top-user"],[data-e2e*="rank"]{display:none !important}'+
+            '[class*="TopFan"],[class*="RankList"],[class*="Leaderboard"],[data-e2e*="top-user"]{display:none !important}'+
             '[class*="SideNav"],[class*="DivSideNav"],[data-e2e*="side-nav"],[class*="DivHeaderContainer"],[class*="HeaderContainer"],[id="app-header"]{display:none !important}';
 
           document.querySelectorAll('video').forEach(function(v){ try{ v.pause(); v.muted=true; v.removeAttribute('src'); v.load(); }catch(e){} });
 
-          // Xóa nền: nền đậm -> trong suốt; khối sáng mỏng (thanh trắng) -> ẩn; ảnh lớn -> ẩn
-          var all=document.body.querySelectorAll('*');
-          for(var j=0;j<all.length;j++){
-            var e=all[j];
-            if(!e.dataset || e.dataset.tvT) continue;
+          // Xử lý từng phần tử: bỏ nền gradient / nền màu của khung lớn (thanh trắng), ẩn ảnh bìa lớn
+          function proc(e){
+            if(!e||e.nodeType!==1||!e.getBoundingClientRect) return;
             var tg=e.tagName;
-            if(tg==='SCRIPT'||tg==='STYLE'||tg==='svg'||tg==='path'||tg==='use'||tg==='g') continue;
+            if(tg==='SCRIPT'||tg==='STYLE'||tg==='svg'||tg==='path'||tg==='use'||tg==='g') return;
             var q=e.getBoundingClientRect();
-            if(!q.width||!q.height) continue;
-            e.dataset.tvT='1';
-            if(tg==='IMG'){ if(q.width>=200&&q.height>=120) e.style.setProperty('visibility','hidden','important'); continue; }
-            var m=getComputedStyle(e).backgroundColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?/);
+            if(!q.width||!q.height) return;
+            if(tg==='IMG'){ if(q.width>=200&&q.height>=120) e.style.setProperty('visibility','hidden','important'); return; }
+            var cs=getComputedStyle(e);
+            var bi=cs.backgroundImage;
+            if(bi && bi!=='none' && bi.indexOf('gradient')>=0) e.style.setProperty('background-image','none','important');
+            var m=cs.backgroundColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?/);
             if(m){
               var a=(m[4]===undefined)?1:parseFloat(m[4]);
-              if(a>0.05){
-                var lum=0.299*m[1]+0.587*m[2]+0.114*m[3];
-                if(lum>140 && q.height<90 && q.width>=120){ e.style.setProperty('display','none','important'); continue; }
-                e.style.setProperty('background','transparent','important');
+              if(a>0.05 && q.width>=120 && q.height>=10) e.style.setProperty('background','transparent','important');
+            }
+          }
+          // Theo dõi phần tử mới / đổi class (thanh trắng hay xuất hiện sau một lúc)
+          if(!window.__tvObs){
+            window.__tvQ=new Set();
+            var sched=false;
+            window.__tvObs=new MutationObserver(function(ms){
+              ms.forEach(function(m){
+                if(m.type==='childList'){
+                  m.addedNodes.forEach(function(n){
+                    if(n.nodeType===1){ window.__tvQ.add(n); if(n.querySelectorAll) n.querySelectorAll('*').forEach(function(c){ window.__tvQ.add(c); }); }
+                  });
+                } else if(m.target && m.target.nodeType===1){ window.__tvQ.add(m.target); }
+              });
+              if(!sched){
+                sched=true;
+                setTimeout(function(){ sched=false; var arr=Array.from(window.__tvQ); window.__tvQ.clear(); arr.forEach(proc); },300);
+              }
+            });
+            window.__tvObs.observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['class']});
+          }
+          window.__tvN=(window.__tvN||0)+1;
+          if(window.__tvN===1||window.__tvN%5===0){
+            var all=document.body.querySelectorAll('*');
+            for(var j=0;j<all.length;j++) proc(all[j]);
+          }
+
+          // Ẩn bảng xếp hạng / top người gửi theo nội dung chữ, giữ lại dòng "Người xem"
+          var tops=document.body.querySelectorAll('div,section,span');
+          for(var t=0;t<tops.length;t++){
+            var te=tops[t];
+            if(te.dataset.tvTop) continue;
+            var txt=(te.innerText||'').trim();
+            if(!txt || txt.length>400) continue;
+            if(/Người xem/i.test(txt)) continue;
+            if(/(Được gửi nhiều nhất|Bảng xếp hạng|Top người|Top fan|Xếp hạng)/i.test(txt)){
+              var tr=te.getBoundingClientRect();
+              if(tr.height>0 && tr.height<H*0.4){
+                te.style.setProperty('display','none','important');
+                te.dataset.tvTop='1';
               }
             }
           }
@@ -226,6 +267,8 @@ class PlayerActivity : Activity() {
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // Tắt HDR / màu rộng: ép cửa sổ về chế độ màu SDR mặc định
+        if (Build.VERSION.SDK_INT >= 26) window.colorMode = ActivityInfo.COLOR_MODE_DEFAULT
         goImmersive()
 
         val prefs = getSharedPreferences("cfg", MODE_PRIVATE)
@@ -297,10 +340,10 @@ class PlayerActivity : Activity() {
             }
         }
 
-        val chatW = (screenW * 0.30f).toInt()
+        val chatW = (screenW * 0.35f).toInt()
         val chatH = (screenH * 0.58f).toInt()
         val cut = (screenH * 0.13f).toInt()   // phần dưới (ô nhập bình luận) bị cắt bỏ
-        val shiftRight = (resources.displayMetrics.density * 40).toInt()  // dời bình luận sang phải
+        val shiftRight = 0  // không dời nữa: mở rộng khung để hiện trọn cột chat
         chatBox = FrameLayout(this).apply {
             clipChildren = true
             visibility = if (showComments) View.VISIBLE else View.GONE
@@ -399,7 +442,7 @@ class PlayerActivity : Activity() {
 
     private fun updateButtons() {
         btnCmt.text = "Bình luận: " + if (showComments) "BẬT" else "TẮT"
-        btnQ.text = "Độ phân giải: " + if (curRank >= 0) rankLabel(curRank) else "-"
+        btnQ.text = "Độ phân giải: " + if (curRank >= 0) rankLabel(curRank) + rankDetail(curRank) else "-"
         btnPause.text = if (player.playWhenReady) "Tạm dừng" else "Phát"
         btnT.text = "Cỡ chữ bình luận: " + TEXT_NAMES[textIdx]
     }
@@ -466,12 +509,14 @@ class PlayerActivity : Activity() {
     }
 
     // ================= Lấy luồng + phát =================
-    private fun rankLabel(r: Int): String {
-        val p = measuredP[r]
-        if (p != null) return "${p}p" + if (measuredFps60[r] == true) "60" else ""
-        return when (r) {
-            1 -> "360p"; 2 -> "480p"; 3 -> "720p"; 4 -> "1080p"; 5 -> "Gốc"; else -> "Tự động"
-        }
+    private fun rankLabel(r: Int): String = when (r) {
+        1 -> "SD"; 2 -> "HD"; 3 -> "FHD"; 4 -> "UHD"; else -> "Tự động"
+    }
+
+    /** Độ phân giải thực đo được sau khi phát (vd " (1080p60)"), để đối chiếu với tên mức. */
+    private fun rankDetail(r: Int): String {
+        val p = measuredP[r] ?: return ""
+        return " (" + p + "p" + (if (measuredFps60[r] == true) "60" else "") + ")"
     }
 
     private fun startFpsProbe() {
@@ -492,17 +537,18 @@ class PlayerActivity : Activity() {
             val list = ArrayList<StreamInfo>()
             for (i in 0 until arr.length()) {
                 val u = arr.getString(i)
-                val rank = when (RANK_RE.find(u)?.groupValues?.get(1)?.lowercase()) {
+                val raw = when (RANK_RE.find(u)?.groupValues?.get(1)?.lowercase()) {
                     "ld" -> 1; "sd" -> 2; "hd" -> 3; "uhd" -> 4; "or" -> 5; else -> 0
                 }
-                list.add(StreamInfo(u, rank, u.substringBefore('?').endsWith(".flv")))
+                val tier = when (raw) { 1, 2 -> 1; 3 -> 2; 4 -> 3; 5 -> 4; else -> 0 }
+                list.add(StreamInfo(u, tier, raw, u.substringBefore('?').endsWith(".flv")))
             }
             if (list.isEmpty()) return
             streams = list
             ranks = list.map { it.rank }.distinct().sorted()
             streamFound = true
-            // Mặc định: mức cao nhất đến 1080p (bỏ mức "gốc" để đỡ nặng cho TV)
-            playRank(ranks.filter { it in 1..4 }.lastOrNull() ?: ranks.first())
+            // Mặc định: mức cao nhất đến FHD (bỏ UHD / bản gốc để đỡ nặng cho TV)
+            playRank(ranks.filter { it in 1..3 }.lastOrNull() ?: ranks.first())
             if (!showComments) web.loadUrl("about:blank")
         } catch (e: Exception) {
             // thử lại ở lần poll sau
@@ -516,7 +562,8 @@ class PlayerActivity : Activity() {
     }
 
     private fun tryPlay() {
-        val c = streams.filter { it.rank == curRank }.sortedByDescending { it.flv }
+        val c = streams.filter { it.rank == curRank }
+            .sortedWith(compareByDescending<StreamInfo> { it.raw }.thenByDescending { it.flv })
         if (attempt >= c.size) {
             showMsg("Không phát được ở mức này. Thử đổi độ phân giải hoặc Tải lại", 0)
             return
